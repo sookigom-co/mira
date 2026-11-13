@@ -102,6 +102,8 @@ class LLMConfig(BaseModel):
     claude_command: str = "claude"
     claude_oauth_token_env: str = "CLAUDE_CODE_OAUTH_TOKEN"
     claude_timeout_seconds: int = Field(default=900, gt=0)
+    # Pass Mira's JSON schema to `claude -p --json-schema` (validated output).
+    claude_structured_output: bool = True
 
     @field_validator("base_url")
     @classmethod
@@ -461,6 +463,7 @@ _DEPLOYMENT_ONLY_LLM_KEYS = frozenset(
         "claude_command",
         "claude_oauth_token_env",
         "claude_timeout_seconds",
+        "claude_structured_output",
     }
 )
 

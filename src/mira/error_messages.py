@@ -150,6 +150,10 @@ LLM_ERROR_MESSAGES: dict[str, ErrorMessage] = {
         full="Claude Code timed out after {seconds}s",
         safe="Claude Code timed out",
     ),
+    "claude_malformed_json": ErrorMessage(
+        full="Claude Code returned malformed JSON: {error}: {excerpt}",
+        safe="Claude Code returned malformed JSON",
+    ),
     "claude_exit_failed": ErrorMessage(
         full="Claude Code failed with exit {exit_code}: {detail}",
         safe="Claude Code failed",

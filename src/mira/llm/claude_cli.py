@@ -59,7 +59,7 @@ class ClaudeCLIProvider(CodexCLIProvider):
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         return env
 
-    def _claude_command(self) -> list[str]:
+    def _claude_command(self, json_schema: dict | None = None) -> list[str]:
         command = self.config.claude_command or "claude"
         if any(char in command for char in (" ", "\t", "\n", ";", "|", "&")):
             raise ValueError(
@@ -85,6 +85,11 @@ class ClaudeCLIProvider(CodexCLIProvider):
             cmd.extend(["--effort", effort])
         if self.config.model not in _DEFAULT_MODELS:
             cmd.extend(["--model", self.config.model])
+        if json_schema is not None and self.config.claude_structured_output:
+            # Structured output: Claude Code validates the answer against the
+            # schema and returns it in `structured_output`, so large JSON with
+            # quotes or code in strings can't come back malformed.
+            cmd.extend(["--json-schema", json.dumps(json_schema, separators=(",", ":"))])
         return cmd
 
     def _parse_result(self, stdout_text: str, stderr_text: str, returncode: int | None) -> str:
@@ -113,6 +118,9 @@ class ClaudeCLIProvider(CodexCLIProvider):
             + int(usage.get("cache_read_input_tokens", 0)),
             int(usage.get("output_tokens", 0)),
         )
+        structured = payload.get("structured_output")
+        if isinstance(structured, dict):
+            return json.dumps(structured, ensure_ascii=False)
         return str(payload.get("result", "")).strip()
 
     @retry(
@@ -121,15 +129,15 @@ class ClaudeCLIProvider(CodexCLIProvider):
         retry=retry_if_exception_type(LLMError),
         reraise=True,
     )
-    async def _run_codex(self, prompt: str) -> str:  # name kept: the base class calls it
+    async def _run_codex(self, prompt: str, json_schema: dict | None = None) -> str:
         self._last_usage = None
         with tempfile.TemporaryDirectory(prefix="mira-claude-") as tmpdir:
             runtime_home = str(Path(tmpdir) / "home")
             Path(runtime_home).mkdir(mode=0o700)
             workdir = str(Path(tmpdir) / "work")
             Path(workdir).mkdir(mode=0o700)
-            cmd = self._claude_command()
-            logger.debug("Running Claude CLI provider: %s", shlex.join(cmd))
+            cmd = self._claude_command(json_schema)
+            logger.debug("Running Claude CLI provider: %s", shlex.join(cmd[:12]))
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -182,6 +190,43 @@ class ClaudeCLIProvider(CodexCLIProvider):
             self.total_prompt_tokens += self.count_tokens(prompt)
             self.total_completion_tokens += self.count_tokens(result)
 
+    def _json_from_text(self, text: str) -> str:
+        """Extract one JSON object, tolerating raw control characters in strings."""
+        candidate = text.strip()
+        if "```" in candidate:
+            for block in candidate.split("```")[1::2]:
+                block = block.strip()
+                block = block[4:].strip() if block.startswith("json") else block
+                if block.startswith("{"):
+                    candidate = block
+                    break
+        start, end = candidate.find("{"), candidate.rfind("}")
+        if start == -1 or end <= start:
+            raise LLMError("claude_malformed_json", error="no JSON object", excerpt=text[:500])
+        obj = candidate[start : end + 1]
+        try:
+            parsed = json.loads(obj, strict=False)
+        except json.JSONDecodeError as exc:
+            raise LLMError("claude_malformed_json", error=str(exc), excerpt=obj[:500]) from exc
+        if not isinstance(parsed, dict):
+            raise LLMError("claude_malformed_json", error="not an object", excerpt=obj[:500])
+        return json.dumps(parsed, ensure_ascii=False)
+
+    async def _run_json(self, prompt: str, schema: dict) -> str:
+        """Run with structured output; re-ask once if the answer still isn't valid JSON."""
+        last: LLMError | None = None
+        for attempt in range(2):
+            raw = await self._run_codex(prompt, json_schema=schema)
+            try:
+                return self._json_from_text(raw)
+            except LLMError as exc:
+                last = exc
+                logger.warning(
+                    "Claude CLI returned invalid JSON (attempt %d): %s", attempt + 1, exc
+                )
+        assert last is not None
+        raise last
+
     async def complete(
         self,
         messages: list[dict[str, str]],
@@ -197,8 +242,9 @@ class ClaudeCLIProvider(CodexCLIProvider):
                 "\n\n## Required output\n"
                 "Return ONLY one valid JSON object. No markdown fences or explanatory text."
             )
-        raw = await self._run_codex(prompt)
-        result = self._extract_json_object(raw) if json_mode else raw
+            result = await self._run_json(prompt, {"type": "object"})
+        else:
+            result = await self._run_codex(prompt)
         self._record_usage(prompt, result)
         return result
 
@@ -210,7 +256,21 @@ class ClaudeCLIProvider(CodexCLIProvider):
         force_tool: str | None = None,
     ) -> str:
         prompt = self._tool_prompt(messages, tools, force_tool=force_tool)
-        raw = await self._run_codex(prompt)
-        result = self._extract_json_object(raw)
+        result = await self._run_json(prompt, self._tool_schema(tools, force_tool))
         self._record_usage(prompt, result)
         return result
+
+    @staticmethod
+    def _tool_schema(tools: list[dict], force_tool: str | None) -> dict:
+        fn = tools[0].get("function", {}) if tools else {}
+        if force_tool:
+            fn = next(
+                (
+                    t.get("function", {})
+                    for t in tools
+                    if t.get("function", {}).get("name") == force_tool
+                ),
+                fn,
+            )
+        schema = fn.get("parameters")
+        return schema if isinstance(schema, dict) and schema else {"type": "object"}

@@ -18,8 +18,22 @@ prompt = sys.stdin.read()
 log = os.environ.get("PATH").split(":")[0] + "/calls.jsonl"
 with open(log, "a") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "prompt": prompt}) + "\\n")
-mode = open(os.path.join(os.path.dirname(log), "mode")).read().strip()
-if mode == "ok":
+mode_file = os.path.join(os.path.dirname(log), "mode")
+mode = open(mode_file).read().strip()
+if mode == "structured":
+    assert "--json-schema" in sys.argv
+    print(json.dumps({"type": "result", "is_error": False, "result": "",
+                      "structured_output": {"comments": [], "summary": "say \\"hi\\""},
+                      "usage": {"input_tokens": 5, "output_tokens": 2}}))
+elif mode == "bad_then_ok":
+    open(mode_file, "w").write("ok")
+    print(json.dumps({"type": "result", "is_error": False,
+                      "result": '{"files": [{"path": "a" "b"}]}', "usage": {}}))
+elif mode == "ctrlchar":
+    print(json.dumps({"type": "result", "is_error": False,
+                      "result": '{"files": [{"path": "a", "summary": "line1\\nline2"}]}',
+                      "usage": {}}))
+elif mode == "ok":
     result = '```json\\n{"comments": [], "summary": "ok"}\\n```'
     print(json.dumps({"type": "result", "is_error": False, "result": result,
                       "usage": {"input_tokens": 100, "cache_read_input_tokens": 20,
@@ -121,3 +135,33 @@ async def test_missing_token(fake_claude, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
     with pytest.raises(LLMError):
         await _provider().complete([{"role": "user", "content": "x"}])
+
+
+@pytest.mark.asyncio
+async def test_structured_output_preferred(fake_claude):
+    (fake_claude / "mode").write_text("structured")
+    out = await _provider(model="sonnet").review([{"role": "user", "content": "d"}])
+    assert json.loads(out)["summary"] == 'say "hi"'
+    argv = _calls(fake_claude)[0]["argv"]
+    schema = json.loads(argv[argv.index("--json-schema") + 1])
+    assert schema.get("type") == "object" and schema.get("properties")
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_is_retried(fake_claude):
+    (fake_claude / "mode").write_text("bad_then_ok")
+    out = await _provider().complete([{"role": "user", "content": "x"}])
+    assert json.loads(out)["summary"] == "ok"
+    assert len(_calls(fake_claude)) == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_control_chars_tolerated(fake_claude):
+    (fake_claude / "mode").write_text("ctrlchar")
+    out = await _provider().complete([{"role": "user", "content": "x"}])
+    assert json.loads(out)["files"][0]["summary"] == "line1\nline2"
+
+
+def test_structured_output_can_be_disabled():
+    cmd = _provider(claude_structured_output=False)._claude_command({"type": "object"})
+    assert "--json-schema" not in cmd
