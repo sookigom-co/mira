@@ -86,9 +86,7 @@ class ClaudeCLIProvider(CodexCLIProvider):
         if self.config.model not in _DEFAULT_MODELS:
             cmd.extend(["--model", self.config.model])
         if json_schema is not None and self.config.claude_structured_output:
-            # Structured output: Claude Code validates the answer against the
-            # schema and returns it in `structured_output`, so large JSON with
-            # quotes or code in strings can't come back malformed.
+            # Claude Code validates the answer against the schema into `structured_output`.
             cmd.extend(["--json-schema", json.dumps(json_schema, separators=(",", ":"))])
         return cmd
 
