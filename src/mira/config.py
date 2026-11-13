@@ -97,6 +97,11 @@ class LLMConfig(BaseModel):
     codex_home: str | None = None
     codex_sandbox: Literal["read-only"] = "read-only"
     codex_timeout_seconds: int = Field(default=900, gt=0)
+    # Claude Code CLI provider settings. Auth is the OAuth token from
+    # `claude setup-token`, read from `claude_oauth_token_env`; no API key is used.
+    claude_command: str = "claude"
+    claude_oauth_token_env: str = "CLAUDE_CODE_OAUTH_TOKEN"
+    claude_timeout_seconds: int = Field(default=900, gt=0)
 
     @field_validator("base_url")
     @classmethod
@@ -453,6 +458,9 @@ _DEPLOYMENT_ONLY_LLM_KEYS = frozenset(
         "codex_home",
         "codex_sandbox",
         "codex_timeout_seconds",
+        "claude_command",
+        "claude_oauth_token_env",
+        "claude_timeout_seconds",
     }
 )
 

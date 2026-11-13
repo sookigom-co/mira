@@ -137,6 +137,23 @@ LLM_ERROR_MESSAGES: dict[str, ErrorMessage] = {
         full="Codex CLI response did not contain a JSON object: {excerpt}",
         safe="Codex CLI response did not contain a JSON object",
     ),
+    # Claude Code CLI provider errors
+    "claude_oauth_token_missing": ErrorMessage(
+        full="Claude OAuth token not set: export {env} (from `claude setup-token`).",
+        safe="Claude OAuth token not set",
+    ),
+    "claude_command_not_found": ErrorMessage(
+        full="Claude Code command not found: {command!r}. Install @anthropic-ai/claude-code or set llm.claude_command.",
+        safe="Claude Code command not found — install @anthropic-ai/claude-code or set llm.claude_command",
+    ),
+    "claude_timeout": ErrorMessage(
+        full="Claude Code timed out after {seconds}s",
+        safe="Claude Code timed out",
+    ),
+    "claude_exit_failed": ErrorMessage(
+        full="Claude Code failed with exit {exit_code}: {detail}",
+        safe="Claude Code failed",
+    ),
 }
 
 
