@@ -54,6 +54,7 @@ class CodexCLIProvider:
     supports_tool_calling: bool = False
     supports_temperature: bool = False
     supports_max_tokens: bool = False
+    _backend_label: str = "Codex CLI"
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
@@ -195,8 +196,8 @@ class CodexCLIProvider:
 
     def _messages_prompt(self, messages: list[dict]) -> str:
         parts = [
-            "You are running as Mira's model backend through Codex CLI.",
-            "Follow the Mira review instructions exactly. Do not mention Codex CLI.",
+            f"You are running as Mira's model backend through {self._backend_label}.",
+            f"Follow the Mira review instructions exactly. Do not mention {self._backend_label}.",
             "Return only the requested final answer; no prose wrappers unless explicitly requested.",
             "",
             "## Mira messages",
