@@ -39,6 +39,8 @@ _SYSTEM_PROMPT = (
 class ClaudeCLIProvider(CodexCLIProvider):
     """LLM provider that shells out to Claude Code in headless mode (``claude -p``)."""
 
+    _backend_label = "Claude Code"
+
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
         self._last_usage: tuple[int, int] | None = None
@@ -170,14 +172,6 @@ class ClaudeCLIProvider(CodexCLIProvider):
                 stderr.decode("utf-8", errors="replace"),
                 proc.returncode,
             )
-
-    def _messages_prompt(self, messages: list[dict]) -> str:
-        return (
-            super()
-            ._messages_prompt(messages)
-            .replace("through Codex CLI.", "through Claude Code.")
-            .replace("Do not mention Codex CLI.", "Do not mention Claude Code.")
-        )
 
     def _record_usage(self, prompt: str, result: str) -> None:
         real = self._last_usage

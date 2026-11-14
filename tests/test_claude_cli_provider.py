@@ -11,6 +11,7 @@ from mira.dashboard.model_catalog import active_backend
 from mira.exceptions import LLMError
 from mira.llm import create_llm
 from mira.llm.claude_cli import ClaudeCLIProvider
+from mira.llm.codex_cli import CodexCLIProvider
 
 FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys
@@ -160,6 +161,27 @@ async def test_raw_control_chars_tolerated(fake_claude):
     (fake_claude / "mode").write_text("ctrlchar")
     out = await _provider().complete([{"role": "user", "content": "x"}])
     assert json.loads(out)["files"][0]["summary"] == "line1\nline2"
+
+
+@pytest.mark.asyncio
+async def test_review_prompt_names_claude_not_codex(fake_claude):
+    await _provider(model="sonnet").review([{"role": "user", "content": "diff here"}])
+    prompt = _calls(fake_claude)[0]["prompt"]
+    assert "Claude Code" in prompt and "Codex" not in prompt
+
+
+def test_tool_prompt_names_claude_not_codex():
+    tools = [{"type": "function", "function": {"name": "submit_result", "parameters": {}}}]
+    prompt = _provider()._tool_prompt([{"role": "user", "content": "x"}], tools)
+    assert "Claude Code" in prompt and "Codex" not in prompt
+
+
+def test_codex_prompt_wording_unchanged():
+    prompt = CodexCLIProvider(LLMConfig(provider="codex-cli"))._messages_prompt([])
+    assert prompt.startswith(
+        "You are running as Mira's model backend through Codex CLI.\n"
+        "Follow the Mira review instructions exactly. Do not mention Codex CLI.\n"
+    )
 
 
 def test_structured_output_can_be_disabled():
