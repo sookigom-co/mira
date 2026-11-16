@@ -25,6 +25,7 @@ IndexingTemperature = (
 # 0.1.1 standardization on the .yaml extension.
 _DEFAULT_CONFIG_FILENAMES = (".mira.yaml", ".mira.yml")
 
+# Keep in sync with CUSTOM_INSTRUCTIONS_MAX_LENGTH in ui/mira/src/pages/settings.tsx.
 MAX_CUSTOM_INSTRUCTIONS_CHARS = 4000
 
 
@@ -481,6 +482,12 @@ def _strip_deployment_only_settings(overlay: dict[str, Any]) -> dict[str, Any]:
     # Command authorization is deployment-controlled: a repository must not
     # be able to widen its own command allowlist.
     cleaned.pop("commands", None)
+    # Free-form text injected into system prompts must come from a trusted source.
+    review = cleaned.get("review")
+    if isinstance(review, dict):
+        cleaned_review = dict(review)
+        cleaned_review.pop("custom_instructions", None)
+        cleaned["review"] = cleaned_review
     return cleaned
 
 
