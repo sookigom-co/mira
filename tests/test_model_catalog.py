@@ -47,6 +47,12 @@ class TestBuildOptions:
         values = [m["value"] for m in build_options("codex-cli", None, "review")]
         assert values == ["codex-default"]
 
+    def test_claude_cli_backend_offers_fable_5_2(self):
+        values = [m["value"] for m in build_options("claude-cli", None, "review")]
+        assert "claude-fable-5-2" in values
+        openrouter = [m["value"] for m in build_options("openrouter", None, "review")]
+        assert "claude-fable-5-2" not in openrouter
+
     def test_openrouter_does_not_offer_codex_models(self):
         values = [m["value"] for m in build_options("openrouter", None, "review")]
         assert "codex-default" not in values
