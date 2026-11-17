@@ -26,6 +26,10 @@ if mode == "structured":
     print(json.dumps({"type": "result", "is_error": False, "result": "",
                       "structured_output": {"comments": [], "summary": "say \\"hi\\""},
                       "usage": {"input_tokens": 5, "output_tokens": 2}}))
+elif mode == "empty_structured":
+    print(json.dumps({"type": "result", "is_error": False,
+                      "result": '{"files": [{"path": "a", "summary": "s"}]}',
+                      "structured_output": {}, "usage": {}}))
 elif mode == "bad_then_ok":
     open(mode_file, "w").write("ok")
     print(json.dumps({"type": "result", "is_error": False,
@@ -146,6 +150,27 @@ async def test_structured_output_preferred(fake_claude):
     argv = _calls(fake_claude)[0]["argv"]
     schema = json.loads(argv[argv.index("--json-schema") + 1])
     assert schema.get("type") == "object" and schema.get("properties")
+
+
+@pytest.mark.asyncio
+async def test_complete_json_mode_sends_no_schema(fake_claude):
+    (fake_claude / "mode").write_text("ctrlchar")
+    out = await _provider(model="sonnet").complete(
+        [{"role": "user", "content": "x"}], json_mode=True
+    )
+    assert json.loads(out)["files"][0]["path"] == "a"
+    call = _calls(fake_claude)[0]
+    assert "--json-schema" not in call["argv"]
+    assert "Return ONLY one valid JSON object" in call["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_empty_structured_output_falls_back_to_result(fake_claude, caplog):
+    (fake_claude / "mode").write_text("empty_structured")
+    with caplog.at_level("WARNING", logger="mira.llm.claude_cli"):
+        out = await _provider().review([{"role": "user", "content": "d"}])
+    assert json.loads(out)["files"][0]["summary"] == "s"
+    assert "structured_output is empty" in caplog.text
 
 
 @pytest.mark.asyncio

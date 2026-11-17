@@ -119,9 +119,18 @@ class ClaudeCLIProvider(CodexCLIProvider):
             int(usage.get("output_tokens", 0)),
         )
         structured = payload.get("structured_output")
-        if isinstance(structured, dict):
+        result_text = str(payload.get("result", "")).strip()
+        if isinstance(structured, dict) and structured:
             return json.dumps(structured, ensure_ascii=False)
-        return str(payload.get("result", "")).strip()
+        if structured is not None:
+            logger.warning(
+                "Claude CLI structured_output is empty or not an object (%s); "
+                "falling back to result text (%d chars): %.300s",
+                type(structured).__name__,
+                len(result_text),
+                result_text,
+            )
+        return result_text
 
     @retry(
         stop=stop_after_attempt(2),
@@ -204,8 +213,8 @@ class ClaudeCLIProvider(CodexCLIProvider):
             raise LLMError("claude_malformed_json", error="not an object", excerpt=obj[:500])
         return json.dumps(parsed, ensure_ascii=False)
 
-    async def _run_json(self, prompt: str, schema: dict) -> str:
-        """Run with structured output; re-ask once if the answer still isn't valid JSON."""
+    async def _run_json(self, prompt: str, schema: dict | None) -> str:
+        """Run expecting one JSON object; re-ask once if the answer still isn't valid JSON."""
         last: LLMError | None = None
         for attempt in range(2):
             raw = await self._run_codex(prompt, json_schema=schema)
@@ -234,7 +243,7 @@ class ClaudeCLIProvider(CodexCLIProvider):
                 "\n\n## Required output\n"
                 "Return ONLY one valid JSON object. No markdown fences or explanatory text."
             )
-            result = await self._run_json(prompt, {"type": "object"})
+            result = await self._run_json(prompt, None)
         else:
             result = await self._run_codex(prompt)
         self._record_usage(prompt, result)

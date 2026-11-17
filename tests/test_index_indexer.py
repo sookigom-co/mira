@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from mira.config import MiraConfig
+from mira.config import LLMConfig, MiraConfig
 from mira.index.indexer import (
     _build_file_summary,
     _content_hash,
@@ -19,6 +19,7 @@ from mira.index.indexer import (
     _read_paths,
     _should_index,
     _strip_code_fences,
+    _summarize_batch,
     index_diff,
     index_repo,
 )
@@ -122,6 +123,68 @@ class TestParseSummarizeResponse:
         raw = json.dumps({"files": [{"path": "a.py", "summary": 'tab\there "quote"'}]})
         result = _parse_summarize_response(raw)
         assert result[0]["summary"] == 'tab\there "quote"'
+
+    def test_files_as_json_string(self):
+        raw = json.dumps({"files": json.dumps([{"path": "a.py", "summary": "S"}])})
+        result = _parse_summarize_response(raw)
+        assert result == [{"path": "a.py", "summary": "S"}]
+
+    def test_files_as_non_json_string(self, caplog):
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            result = _parse_summarize_response(json.dumps({"files": "see above"}))
+        assert result == []
+        assert "non-JSON string" in caplog.text
+
+    def test_non_object_entries_dropped(self, caplog):
+        raw = json.dumps({"files": ["a.py", 3, {"path": "b.py", "summary": "B"}]})
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            result = _parse_summarize_response(raw)
+        assert result == [{"path": "b.py", "summary": "B"}]
+        assert "Dropped 2 non-object entries" in caplog.text
+
+    def test_files_not_a_list(self, caplog):
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            result = _parse_summarize_response(json.dumps({"files": {"path": "a.py"}}))
+        assert result == []
+        assert "expected a list" in caplog.text
+
+    def test_single_file_object(self):
+        result = _parse_summarize_response(json.dumps({"path": "a.py", "summary": "A"}))
+        assert result == [{"path": "a.py", "summary": "A"}]
+
+    def test_empty_object_logs_size(self, caplog):
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            assert _parse_summarize_response("{}") == []
+        assert "unexpected structure (keys: [], 2 chars)" in caplog.text
+
+
+class TestSummarizeBatch:
+    class _LLM:
+        def __init__(self, raw: str):
+            self.config = LLMConfig(provider="claude-cli")
+            self.raw = raw
+
+        async def complete(self, messages, **kwargs):
+            return self.raw
+
+    async def test_string_entries_do_not_abort_batch(self, caplog):
+        llm = self._LLM(json.dumps({"files": ["src/main.py"]}))
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            results = await _summarize_batch([("src/main.py", "x")], llm, asyncio.Semaphore(1))
+        assert results == []
+        assert "Dropped 1 non-object entries" in caplog.text
+
+    async def test_unmatched_paths_logged(self, caplog):
+        llm = self._LLM(json.dumps({"files": [{"path": "other.py", "summary": "O"}]}))
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            results = await _summarize_batch([("src/main.py", "x")], llm, asyncio.Semaphore(1))
+        assert results == []
+        assert "none matched the 1 batch paths" in caplog.text
+
+    async def test_matching_entry_returned(self):
+        llm = self._LLM(json.dumps({"files": [{"path": "src/main.py", "summary": "M"}]}))
+        results = await _summarize_batch([("src/main.py", "x")], llm, asyncio.Semaphore(1))
+        assert results == [("src/main.py", "x", {"path": "src/main.py", "summary": "M"})]
 
 
 class TestStripCodeFences:

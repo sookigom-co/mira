@@ -223,9 +223,7 @@ def _escape_lone_backslashes(text: str) -> str:
 def _parse_summarize_response(raw: str) -> list[dict[str, Any]]:
     """Parse the LLM response from the summarization prompt."""
     text = strip_think_blocks(_strip_code_fences(raw))
-    # strict=False tolerates raw newlines in strings; a repair pass for lone
-    # backslashes salvages otherwise-valid responses from models that don't
-    # escape paths/namespaces, so one bad string doesn't drop the whole batch.
+    # strict=False tolerates raw newlines; the second candidate repairs lone backslashes.
     data: Any = None
     for candidate in (text, _escape_lone_backslashes(text)):
         try:
@@ -238,16 +236,45 @@ def _parse_summarize_response(raw: str) -> list[dict[str, Any]]:
         return []
 
     if isinstance(data, dict) and "files" in data:
-        result: list[dict[str, Any]] = data["files"]
-        return result
+        return _file_entries(data["files"], text)
     if isinstance(data, list):
-        return list(data)
+        return _file_entries(data, text)
+    if isinstance(data, dict) and "path" in data:
+        return [data]
     logger.warning(
-        "Summarization response has unexpected structure (keys: %s): %s",
+        "Summarization response has unexpected structure (keys: %s, %d chars): %s",
         list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+        len(text),
         text[:200],
     )
     return []
+
+
+def _file_entries(files: Any, text: str) -> list[dict[str, Any]]:
+    """Keep only object entries from a `files` value that may be a list or a JSON string."""
+    if isinstance(files, str):
+        try:
+            loaded = json.loads(files, strict=False)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Summarization 'files' is a non-JSON string (%d chars): %.200s", len(files), files
+            )
+            return []
+        files = loaded.get("files", loaded) if isinstance(loaded, dict) else loaded
+    if not isinstance(files, list):
+        logger.warning(
+            "Summarization 'files' is %s, expected a list: %.200s", type(files).__name__, text
+        )
+        return []
+    entries = [item for item in files if isinstance(item, dict)]
+    if len(entries) != len(files):
+        logger.warning(
+            "Dropped %d non-object entries from summarization 'files' (types: %s): %.200s",
+            len(files) - len(entries),
+            sorted({type(item).__name__ for item in files if not isinstance(item, dict)}),
+            text,
+        )
+    return entries
 
 
 def _build_file_summary(path: str, content: str, file_data: dict[str, Any]) -> FileSummary:
@@ -369,6 +396,13 @@ async def _summarize_batch(
             results.append((path, content, parsed_by_path[path]))
         else:
             logger.debug("No summary returned for %s", path)
+    if parsed and not results:
+        logger.warning(
+            "Summarization returned %d entries but none matched the %d batch paths; returned: %s",
+            len(parsed),
+            len(files),
+            [d.get("path") for d in parsed][:10],
+        )
     return results
 
 
