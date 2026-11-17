@@ -155,10 +155,13 @@ async def test_structured_output_preferred(fake_claude):
 @pytest.mark.asyncio
 async def test_complete_json_mode_sends_no_schema(fake_claude):
     (fake_claude / "mode").write_text("ctrlchar")
-    out = await _provider(model="sonnet").complete([{"role": "user", "content": "x"}])
+    out = await _provider(model="sonnet").complete(
+        [{"role": "user", "content": "x"}], json_mode=True
+    )
     assert json.loads(out)["files"][0]["path"] == "a"
-    argv = _calls(fake_claude)[0]["argv"]
-    assert "--json-schema" not in argv
+    call = _calls(fake_claude)[0]
+    assert "--json-schema" not in call["argv"]
+    assert "Return ONLY one valid JSON object" in call["prompt"]
 
 
 @pytest.mark.asyncio
