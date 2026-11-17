@@ -157,6 +157,18 @@ class TestParseSummarizeResponse:
             assert _parse_summarize_response("{}") == []
         assert "unexpected structure (keys: [], 2 chars)" in caplog.text
 
+    def test_trailing_commas_repaired(self):
+        raw = '{"files": [{"path": "a.scss", "summary": "S", "symbols": [],},],}'
+        assert _parse_summarize_response(raw) == [{"path": "a.scss", "summary": "S", "symbols": []}]
+
+    def test_unparseable_logs_error_position(self, caplog):
+        raw = '{"files": [{"path": "' + "p" * 400 + '", "summary": "S" "x"}]}'
+        with caplog.at_level("WARNING", logger="mira.index.indexer"):
+            assert _parse_summarize_response(raw) == []
+        error_pos = raw.index('"x"')
+        assert f"at char {error_pos} of {len(raw)}" in caplog.text
+        assert '"S" "x"' in caplog.text
+
 
 class TestSummarizeBatch:
     class _LLM:

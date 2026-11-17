@@ -34,6 +34,14 @@ elif mode == "bad_then_ok":
     open(mode_file, "w").write("ok")
     print(json.dumps({"type": "result", "is_error": False,
                       "result": '{"files": [{"path": "a" "b"}]}', "usage": {}}))
+elif mode == "trailing_comma":
+    print(json.dumps({"type": "result", "is_error": False,
+                      "result": '{"files": [{"path": "a", "symbols": [],},],}', "usage": {}}))
+elif mode == "bad_late_then_ok":
+    open(mode_file, "w").write("ok")
+    result = '{"files": [{"path": "a", "summary": "' + "x" * 600 + '", "k": }]}'
+    print(json.dumps({"type": "result", "is_error": False, "result": result,
+                      "usage": {"input_tokens": 5, "output_tokens": 321}}))
 elif mode == "ctrlchar":
     print(json.dumps({"type": "result", "is_error": False,
                       "result": '{"files": [{"path": "a", "summary": "line1\\nline2"}]}',
@@ -179,6 +187,28 @@ async def test_malformed_json_is_retried(fake_claude):
     out = await _provider().complete([{"role": "user", "content": "x"}])
     assert json.loads(out)["summary"] == "ok"
     assert len(_calls(fake_claude)) == 2
+
+
+@pytest.mark.asyncio
+async def test_trailing_commas_repaired_without_retry(fake_claude):
+    (fake_claude / "mode").write_text("trailing_comma")
+    out = await _provider().complete([{"role": "user", "content": "x"}], json_mode=True)
+    assert json.loads(out) == {"files": [{"path": "a", "symbols": []}]}
+    assert len(_calls(fake_claude)) == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_warning_shows_error_position(fake_claude, caplog):
+    (fake_claude / "mode").write_text("bad_late_then_ok")
+    with caplog.at_level("WARNING", logger="mira.llm.claude_cli"):
+        out = await _provider().complete([{"role": "user", "content": "x"}], json_mode=True)
+    assert json.loads(out)["summary"] == "ok"
+    assert len(_calls(fake_claude)) == 2
+    bad = '{"files": [{"path": "a", "summary": "' + "x" * 600 + '", "k": }]}'
+    assert f"attempt 1, {len(bad)} chars, output_tokens=321" in caplog.text
+    assert f"at char {bad.index(': }') + 2} of {len(bad)}" in caplog.text
+    assert '"k": }' in caplog.text
+    assert "tail=" in caplog.text
 
 
 @pytest.mark.asyncio

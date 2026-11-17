@@ -28,7 +28,7 @@ from mira.index.store import (
     SymbolInfo,
 )
 from mira.llm import create_llm
-from mira.llm.utils import strip_think_blocks
+from mira.llm.utils import json_error_context, lenient_json_loads, strip_think_blocks
 from mira.platforms.fetch import RepoFetcher, make_fetcher
 
 logger = logging.getLogger(__name__)
@@ -182,57 +182,17 @@ def _strip_code_fences(raw: str) -> str:
     return text.strip()
 
 
-_VALID_JSON_ESCAPES = set('"\\/bfnrtu')
-
-
-def _escape_lone_backslashes(text: str) -> str:
-    """Escape backslashes that aren't part of a valid JSON escape sequence.
-
-    Models like DeepSeek mention PHP namespaces (``\\App\\Models``) or Windows
-    paths in summaries and emit the backslashes unescaped, so json.loads bails
-    with "Invalid \\escape". We walk string literals and double any backslash
-    that doesn't start a real escape, consuming valid escapes as pairs so an
-    escaped quote is never mistaken for a string boundary.
-    """
-    out: list[str] = []
-    in_string = False
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if not in_string:
-            if ch == '"':
-                in_string = True
-            out.append(ch)
-            i += 1
-        elif ch == "\\":
-            nxt = text[i + 1] if i + 1 < n else ""
-            if nxt in _VALID_JSON_ESCAPES:
-                out.append(ch + nxt)
-                i += 2
-            else:
-                out.append("\\\\")
-                i += 1
-        else:
-            if ch == '"':
-                in_string = False
-            out.append(ch)
-            i += 1
-    return "".join(out)
-
-
 def _parse_summarize_response(raw: str) -> list[dict[str, Any]]:
     """Parse the LLM response from the summarization prompt."""
     text = strip_think_blocks(_strip_code_fences(raw))
-    # strict=False tolerates raw newlines; the second candidate repairs lone backslashes.
-    data: Any = None
-    for candidate in (text, _escape_lone_backslashes(text)):
-        try:
-            data = json.loads(candidate, strict=False)
-            break
-        except (json.JSONDecodeError, TypeError):
-            continue
-    else:
-        logger.warning("Failed to parse summarization response: %s", raw[:300])
+    try:
+        data: Any = lenient_json_loads(text)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Failed to parse summarization response (%s): %.300s",
+            json_error_context(text, exc),
+            raw,
+        )
         return []
 
     if isinstance(data, dict) and "files" in data:
