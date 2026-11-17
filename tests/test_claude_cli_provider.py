@@ -37,6 +37,10 @@ elif mode == "bad_then_ok":
 elif mode == "trailing_comma":
     print(json.dumps({"type": "result", "is_error": False,
                       "result": '{"files": [{"path": "a", "symbols": [],},],}', "usage": {}}))
+elif mode == "missing_closers":
+    result = ('{"files": [{"path": "a", "summary": "s", "symbols": [], '
+              '"external_refs": [{"kind": "git_url", "target": "https://x.test/r"}]}')
+    print(json.dumps({"type": "result", "is_error": False, "result": result, "usage": {}}))
 elif mode == "bad_late_then_ok":
     open(mode_file, "w").write("ok")
     result = '{"files": [{"path": "a", "summary": "' + "x" * 600 + '", "k": }]}'
@@ -195,6 +199,18 @@ async def test_trailing_commas_repaired_without_retry(fake_claude):
     out = await _provider().complete([{"role": "user", "content": "x"}], json_mode=True)
     assert json.loads(out) == {"files": [{"path": "a", "symbols": []}]}
     assert len(_calls(fake_claude)) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_root_closers_repaired_without_retry(fake_claude, caplog):
+    (fake_claude / "mode").write_text("missing_closers")
+    with caplog.at_level("INFO", logger="mira.llm"):
+        out = await _provider().complete([{"role": "user", "content": "x"}], json_mode=True)
+    data = json.loads(out)
+    assert data["files"][0]["external_refs"][0]["target"] == "https://x.test/r"
+    assert len(_calls(fake_claude)) == 1
+    assert "Repaired model JSON (closed brackets" in caplog.text
+    assert "returned invalid JSON" not in caplog.text
 
 
 @pytest.mark.asyncio

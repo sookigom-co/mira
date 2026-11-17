@@ -5,10 +5,19 @@ import json
 import pytest
 
 from mira.llm.utils import (
+    close_unbalanced_brackets,
     escape_lone_backslashes,
     json_error_context,
     lenient_json_loads,
     strip_trailing_commas,
+)
+
+# Shape seen in production: the file object closes but `files` and the root object do not.
+_MISSING_ROOT_CLOSERS = (
+    '{"files":[{"path":"a.php","language":"php","summary":"S","symbols":[{"name":"f",'
+    '"kind":"function","signature":"function f() { }","description":"D"}],"imports":[],'
+    '"symbol_references":[{"source":"f","calls":[{"path":"b.php","symbol":"g"}]}],'
+    '"external_refs":[{"kind":"git_url","target":"https://x.test/r","description":"E"}]}'
 )
 
 
@@ -30,9 +39,64 @@ class TestStripTrailingCommas:
         assert strip_trailing_commas(text) == text
 
 
+class TestCloseUnbalancedBrackets:
+    def test_appends_missing_closers_in_nesting_order(self):
+        assert close_unbalanced_brackets('{"files":[{"a":[1,2') == '{"files":[{"a":[1,2]}]}'
+
+    def test_balanced_text_unchanged(self):
+        text = '{"a": [1, {"b": "c"}]}'
+        assert close_unbalanced_brackets(text) == text
+
+    def test_ignores_brackets_inside_strings(self):
+        assert (
+            close_unbalanced_brackets('{"sig": "f() { [", "n": 1') == '{"sig": "f() { [", "n": 1}'
+        )
+        assert close_unbalanced_brackets('{"s": "a\\"}]"') == '{"s": "a\\"}]"}'
+
+    def test_unchanged_when_text_ends_inside_a_string(self):
+        text = '{"summary": "cut off mid'
+        assert close_unbalanced_brackets(text) == text
+
+    def test_unchanged_when_closers_mismatch(self):
+        text = '{"a": [1}'
+        assert close_unbalanced_brackets(text) == text
+
+    def test_trailing_whitespace_removed_before_closers(self):
+        assert close_unbalanced_brackets('{"a": 1 \n') == '{"a": 1}'
+
+
 class TestLenientJsonLoads:
     def test_valid_json_unchanged(self):
         assert lenient_json_loads('{"a": [1, {"b": "c"}]}') == {"a": [1, {"b": "c"}]}
+
+    def test_repairs_missing_root_closers(self):
+        data = lenient_json_loads(_MISSING_ROOT_CLOSERS)
+        assert isinstance(data, dict)
+        assert [f["path"] for f in data["files"]] == ["a.php"]
+        assert data["files"][0]["external_refs"][0]["target"] == "https://x.test/r"
+
+    def test_repairs_dangling_comma_and_missing_closers_together(self):
+        data = lenient_json_loads('{"files": [{"path": "a", "symbols": [],},')
+        assert data == {"files": [{"path": "a", "symbols": []}]}
+
+    def test_missing_value_after_key_is_not_repaired(self):
+        text = '{"files": [{"path": "a", "summary":'
+        with pytest.raises(json.JSONDecodeError) as exc:
+            lenient_json_loads(text)
+        assert exc.value.pos == len(text)
+
+    def test_repair_is_logged_with_original_error_position(self, caplog):
+        with caplog.at_level("INFO", logger="mira.llm.utils"):
+            lenient_json_loads(_MISSING_ROOT_CLOSERS)
+        assert "Repaired model JSON (closed brackets" in caplog.text
+        assert (
+            f"at char {len(_MISSING_ROOT_CLOSERS)} of {len(_MISSING_ROOT_CLOSERS)}" in caplog.text
+        )
+
+    def test_valid_json_logs_nothing(self, caplog):
+        with caplog.at_level("INFO", logger="mira.llm.utils"):
+            lenient_json_loads('{"a": 1}')
+        assert caplog.text == ""
 
     def test_repairs_trailing_commas(self):
         data = lenient_json_loads('{"files": [{"path": "a.scss", "symbols": [],},],}')

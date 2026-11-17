@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # Match a full <think>…</think> block. MiniMax has been seen to close with
 # either </think> or </thinking>, so accept both.
@@ -131,24 +134,74 @@ def strip_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
+def close_unbalanced_brackets(text: str) -> str:
+    """Append the ``}``/``]`` closers still open at the end of ``text``; unchanged when it is balanced, mismatched, or ends inside a string."""
+    stack: list[str] = []
+    in_string = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack or stack[-1] != ch:
+                return text
+            stack.pop()
+        i += 1
+    if in_string or not stack:
+        return text
+    return text.rstrip() + "".join(reversed(stack))
+
+
+def _repair_candidates(text: str) -> list[tuple[str, str]]:
+    """Enumerate (repair name, repaired text) pairs in the order they are tried, skipping no-op repairs."""
+    candidates: list[tuple[str, str]] = []
+    seen = {text}
+    for base_name, base in (("", text), ("escaped backslashes", escape_lone_backslashes(text))):
+        closed = close_unbalanced_brackets(base)
+        for name, candidate in (
+            (base_name, base),
+            (f"{base_name} + closed brackets", closed),
+            (f"{base_name} + stripped trailing commas", strip_trailing_commas(base)),
+            (
+                f"{base_name} + stripped trailing commas + closed brackets",
+                strip_trailing_commas(closed),
+            ),
+        ):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append((name.removeprefix(" + "), candidate))
+    return candidates
+
+
 def lenient_json_loads(text: str) -> object:
-    """Parse model-emitted JSON, repairing lone backslashes and trailing commas; on failure raise the error for the original text."""
+    """Parse model-emitted JSON, repairing lone backslashes, trailing commas, and missing closers; on failure raise the error for the original text."""
     try:
         return json.loads(text, strict=False)
     except json.JSONDecodeError as original:
         first_error = original
-    with_escapes = escape_lone_backslashes(text)
-    for candidate in (
-        with_escapes,
-        strip_trailing_commas(text),
-        strip_trailing_commas(with_escapes),
-    ):
-        if candidate == text:
-            continue
+    for name, candidate in _repair_candidates(text):
         try:
-            return json.loads(candidate, strict=False)
+            parsed = json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             continue
+        logger.info(
+            "Repaired model JSON (%s; %d -> %d chars) after: %s",
+            name,
+            len(text),
+            len(candidate),
+            json_error_context(text, first_error, radius=80),
+        )
+        return parsed
     raise first_error
 
 
