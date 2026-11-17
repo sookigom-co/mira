@@ -68,6 +68,97 @@ def strip_think_blocks(text: str | None) -> str:
         return result
 
 
+_VALID_JSON_ESCAPES = frozenset('"\\/bfnrtu')
+_JSON_WHITESPACE = frozenset(" \t\r\n")
+
+
+def escape_lone_backslashes(text: str) -> str:
+    """Double every backslash inside a string literal that does not start a valid JSON escape."""
+    out: list[str] = []
+    in_string = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+        elif ch == "\\":
+            nxt = text[i + 1] if i + 1 < n else ""
+            if nxt in _VALID_JSON_ESCAPES:
+                out.append(ch + nxt)
+                i += 2
+            else:
+                out.append("\\\\")
+                i += 1
+        else:
+            if ch == '"':
+                in_string = False
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def strip_trailing_commas(text: str) -> str:
+    """Drop a comma that is directly followed by ``}`` or ``]`` outside string literals."""
+    out: list[str] = []
+    in_string = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == ",":
+            j = i + 1
+            while j < n and text[j] in _JSON_WHITESPACE:
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def lenient_json_loads(text: str) -> object:
+    """Parse model-emitted JSON, repairing lone backslashes and trailing commas; on failure raise the error for the original text."""
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError as original:
+        first_error = original
+    with_escapes = escape_lone_backslashes(text)
+    for candidate in (
+        with_escapes,
+        strip_trailing_commas(text),
+        strip_trailing_commas(with_escapes),
+    ):
+        if candidate == text:
+            continue
+        try:
+            return json.loads(candidate, strict=False)
+        except json.JSONDecodeError:
+            continue
+    raise first_error
+
+
+def json_error_context(text: str, error: json.JSONDecodeError, radius: int = 160) -> str:
+    """Describe where a JSON parse failed: total length plus the text around the error position."""
+    pos = max(0, min(error.pos, len(text)))
+    window = text[max(0, pos - radius) : pos + radius]
+    return f"{error.msg} at char {pos} of {len(text)}; around error: {window!r}"
+
+
 def strip_code_fences(text: str | None) -> str:
     """Remove markdown code fences wrapping JSON.
 

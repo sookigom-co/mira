@@ -24,6 +24,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from mira.config import LLMConfig
 from mira.exceptions import LLMError
 from mira.llm.codex_cli import _SAFE_ENV_KEYS, CodexCLIProvider
+from mira.llm.utils import json_error_context, lenient_json_loads
 
 logger = logging.getLogger(__name__)
 
@@ -206,9 +207,13 @@ class ClaudeCLIProvider(CodexCLIProvider):
             raise LLMError("claude_malformed_json", error="no JSON object", excerpt=text[:500])
         obj = candidate[start : end + 1]
         try:
-            parsed = json.loads(obj, strict=False)
+            parsed = lenient_json_loads(obj)
         except json.JSONDecodeError as exc:
-            raise LLMError("claude_malformed_json", error=str(exc), excerpt=obj[:500]) from exc
+            raise LLMError(
+                "claude_malformed_json",
+                error=json_error_context(obj, exc),
+                excerpt=f"head={obj[:300]!r} tail={obj[-200:]!r}",
+            ) from exc
         if not isinstance(parsed, dict):
             raise LLMError("claude_malformed_json", error="not an object", excerpt=obj[:500])
         return json.dumps(parsed, ensure_ascii=False)
@@ -222,8 +227,13 @@ class ClaudeCLIProvider(CodexCLIProvider):
                 return self._json_from_text(raw)
             except LLMError as exc:
                 last = exc
+                output_tokens = self._last_usage[1] if self._last_usage else None
                 logger.warning(
-                    "Claude CLI returned invalid JSON (attempt %d): %s", attempt + 1, exc
+                    "Claude CLI returned invalid JSON (attempt %d, %d chars, output_tokens=%s): %s",
+                    attempt + 1,
+                    len(raw),
+                    output_tokens,
+                    exc,
                 )
         assert last is not None
         raise last
